@@ -1,0 +1,883 @@
+//using rfid.Constants;ji
+//using rfid.Structures;
+using rfid;
+using rfid.Constants;
+using rfid.Structures;
+using RFIDTester.Common;
+using RFIDTester.RFID;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.IO.Ports;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Windows.Forms;
+
+namespace RFIDTester
+{
+    public partial class FormSeven : Form
+    {
+        public FormSeven()
+        {
+            LogHelper.SetConfig(ApplicationSettings.FilePath);
+            InitializeComponent();
+        }
+        
+        private bool Isopen;
+        private int second;
+        private int readCount;
+        private int writeCount;
+
+        private int errWriteCount;
+        private int errReadCount;
+
+        private bool is_Begin = true;   //是否开始读取RDIF标签
+
+        private bool is_Loop = false;   //是否开始读取RDIF标签
+
+        private bool is_Success = false;   //是否开始读取RDIF标签
+
+
+        private string InStr;
+
+        private ByteHelper byteHelper = new ByteHelper();
+        private List<byte> s_RecvBuff = new List<byte>(4096);  //  数据缓存List
+
+        private List<RFIDModel> rfidModels = new List<RFIDModel>();
+
+        private RadioEnumeration radio = new RadioEnumeration();
+
+
+        private void FormSeven_Load(object sender, EventArgs e)
+        {
+            string[] power = { "30", "29", "28", "27", "26", "25", "24", "23", "22", "21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1" };
+            cB_Power.Items.AddRange(power);
+            string[] Q_Value = { "15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1" };
+            cB_QValue.Items.AddRange(Q_Value);
+            this.cB_Power.SelectedItem = "27";
+            this.cB_QValue.SelectedItem = "5";
+
+            string[] bank = { "EPC", "RESERVED", "TID", "USER" };
+
+            this.cB_Bank.Items.AddRange(bank);
+            this.cB_Bank.SelectedItem = "USER";
+
+           
+            this.timer_second.Enabled = false;
+
+            this.btn_Config.Enabled = false;
+            this.btn_Write.Enabled = false;
+
+            GetRadiosList(ref radio);
+            string[] radioEnums = new string[radio.countRadios];
+            for (int i = 0; i < radio.countRadios; i++)
+            {
+                radioEnums[i] = "射频模块" + i;
+            }
+            cB_Radio.Items.AddRange(radioEnums);
+            if (radio.countRadios > 0)
+            {
+                this.cB_Radio.SelectedItem = radioEnums[0];
+            }
+        }
+
+        private void FormSeven_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            FormPass pass = new FormPass();
+            DialogResult dlg = pass.ShowDialog();
+            if (dlg == DialogResult.Yes)
+            {
+                this.panel_Lock.Enabled = true;
+                e.Cancel = false;
+            }
+            else if (dlg == DialogResult.Cancel)
+            {
+                e.Cancel = true;
+                this.panel_Lock.Enabled = false;
+            }
+        }
+
+
+        private void btn_Open_Click(object sender, EventArgs e)
+        {
+            if (cB_Radio.Text == "" && cB_Radio.SelectedText == string.Empty)
+            {
+                MessageBox.Show("请先选择射频模块");
+                return;
+            }
+            if (Isopen)
+            {
+                Isopen = CloseRFID();
+                if (Isopen)
+                {
+                    this.btn_Open.Text = "连接模块";
+                    this.btn_Write.Enabled = false;
+                    this.btn_Config.Enabled = false;
+                }
+                else
+                {
+                    MessageBox.Show("关闭射频模块失败!");
+                }
+                Isopen = false;
+
+            }
+            else
+            {
+                if (radio==null|| radio.countRadios==0)
+                {
+                    if (GetRadiosList(ref radio))
+                        AddMessage("获取射频模块成功！");
+                    else
+                    {
+                        AddMessage("获取射频模块失败！");
+                        return;
+                    }
+                }
+                bool RadioOpen = OpenRadioModule(radio);
+               
+             
+                if (!RadioOpen)
+                {
+                    MessageBox.Show("打开射频模块失败！");
+                    bool shutDown = rfid_link.Shutdown()==Result.OK?true:false;
+                    if (shutDown)
+                    {
+                        Thread.Sleep(500);
+                        if (GetRadiosList(ref radio))
+                            AddMessage("获取射频模块成功！");
+                        else
+                            AddMessage("获取射频模块失败！");
+                    }
+                    return;
+                }
+                bool AntennaSet = SeAntennaParmSet(uint.Parse(cB_Power.SelectedItem.ToString()));
+                if (!AntennaSet)
+                {
+                    MessageBox.Show("设置天线参数失败！");
+                    CloseRFID();
+                    return;
+                }
+                bool AlgorithmSet = SeAlgorithmParmSet(uint.Parse(cB_QValue.SelectedItem.ToString()));
+                if (!AlgorithmSet)
+                {
+                    MessageBox.Show("设置单化算法失败！");
+                    CloseRFID();
+                    return;
+                }
+                // 
+                if (RadioOpen && AntennaSet && AlgorithmSet)
+                {
+                    Isopen = true;
+                    this.btn_Write.Enabled = true;
+                    this.btn_Config.Enabled = true;
+                    this.btn_Open.Text = "关闭射频模块";
+                }
+                else
+                {
+                    this.btn_Write.Enabled = false;
+                    this.btn_Config.Enabled = false;
+                    this.btn_Open.Text = "连接射频模块";
+                }
+            }
+        }
+        private void MenuItem_Lock_Click(object sender, EventArgs e)
+        {
+            this.panel_Lock.Enabled = false;
+        }
+
+        private void MenuItem_Broken_Click(object sender, EventArgs e)
+        {
+            FormPass pass = new FormPass();
+            DialogResult dlg = pass.ShowDialog();
+            if (dlg == DialogResult.Yes)
+            {
+                this.panel_Lock.Enabled = true;
+            }
+            else if (dlg == DialogResult.Cancel)
+            {
+                this.panel_Lock.Enabled = false;
+            }
+        }
+
+        private void MenuItem_Change_Click(object sender, EventArgs e)
+        {
+            FormChange change = new FormChange();
+            DialogResult dlg = change.ShowDialog();
+        }
+
+       
+
+        private void btn_write_Click(object sender, EventArgs e)
+        {
+            if (this.rB_Single.Checked)
+            {
+                WriteAndRead(1);
+                return;
+            }
+            if (is_Begin)
+            {
+                this.btn_Write.Text = "停止测试";
+                this.btn_Open.Enabled = false;
+
+                this.btn_Config.Enabled = false;
+                is_Success = true;
+                is_Begin = false;
+                is_Loop = true; ;
+                second = 0;            
+                this.timer_second.Enabled = true;           
+
+                for (int i = 0; i < 200000; i++)
+                {
+                    if (is_Loop)
+                    {
+                        if (!WriteAndRead(i + 1)) return;
+                        UpdateLable();
+                    }
+                    else return;
+                    if (i==1999999&&is_Success)
+                    {
+                        AddMessage("本模块已经完成20万次的读写测试，没有发现问题！");
+                    }
+                }
+            }
+            else
+            {
+                is_Loop = false;
+                is_Begin = true;
+
+                this.timer_second.Enabled = false;
+                this.btn_Config.Enabled = true;
+
+                this.btn_Open.Enabled = true;
+                this.btn_Write.Text = "开始测试";
+
+                
+            }
+        }
+        private bool WriteAndRead(int i)
+        {
+            AddMessage(string.Format("========================开始第 -----{0}------轮测试=====================", i));
+            if (second % 7200 == 0 && second > 0)
+            {
+                Thread.Sleep(300000);
+            }
+            InStr = DateTime.Now.ToString("dd HH mm ss");
+          
+            ushort[] pdata = String2Bytes.StringToUshort(InStr);
+
+
+            #region 写    
+            WriteSequentialParms parms = new WriteSequentialParms();
+            parms.offset = 0;
+            parms.bank = MemoryBank.USER;
+            parms.pData = pdata;
+            parms.count = (ushort)pdata.Count();
+
+            bool result_Write = StartRfidWrite(parms);
+
+           
+            if (result_Write)
+            {
+                AddMessage(string.Format("写入标签的数据为：{0}", InStr));
+                Thread.Sleep(1000);
+            }
+            writeCount++;
+            if (!result_Write)
+            {
+                errWriteCount++;
+
+                MessageBox.Show("写入标签出现错误");
+            }
+            #endregion
+
+
+            #region 读       
+            ReadCmdParms readCmdParms = new ReadCmdParms();
+            readCmdParms.offset = 0;
+            readCmdParms.count = (ushort)pdata.Length;
+            readCmdParms.bank = MemoryBank.USER;
+            bool result_Read = StartRfidRead(readCmdParms);
+            if (result_Read)
+            {
+                Thread.Sleep(1000);
+            }
+            readCount++;
+
+            if (!result_Read)
+            {
+                errReadCount++;
+                MessageBox.Show("读取出现错误");
+            }
+            #endregion
+            if (!(result_Read&& result_Write))
+            {
+                is_Success = false;
+                this.btn_Write.Text = "开始测试";
+                this.btn_Config.Enabled = true;
+                this.btn_Open.Enabled = true;
+                this.timer_second.Enabled = false;
+                return false;
+            }
+            Application.DoEvents();
+            return true;
+          
+        }
+        private void timer_second_Tick(object sender, EventArgs e)
+        {                   
+            second++;
+        }
+
+        private void cB_Radio_MouseClick(object sender, MouseEventArgs e)
+        {
+            cB_Radio.Items.Clear();
+            cB_Radio.Text = "";
+            if ( GetRadiosList(ref radio))
+            {
+                if (radio != null && radio.countRadios > 0)
+                {
+                    string[] radioEnums = new string[radio.countRadios];
+                    for (int i = 0; i < radio.countRadios; i++)
+                    {
+                        radioEnums[i] = "射频模块" + i;
+                    }
+                    cB_Radio.Items.AddRange(radioEnums);
+                    this.cB_Radio.SelectedItem = radioEnums[0];
+                }
+            }
+            else
+            {
+                this.cB_Radio.SelectedText = "";
+            }
+        }
+
+        private void btn_Config_Click(object sender, EventArgs e)
+        {
+            try
+            {
+            SingulationMask singulationMask = new SingulationMask();
+            singulationMask.offset = 0;
+
+            SelectMask selectMask = new SelectMask();
+          
+            switch (cB_Bank.Text)
+            {
+                case "EPC":
+                    singulationMask.mask = String2Bytes.StringToBytes(this.txt_Filter.Text);
+                    singulationMask.count = (uint)singulationMask.mask.Count();
+                    selectMask.bank = MemoryBank.EPC;
+                    break;
+                case "RESERVED":
+                    selectMask.bank = MemoryBank.RESERVED;
+                    break;
+                case "TID":
+                    selectMask.bank = MemoryBank.TID;
+                    break;
+                case "USER":
+                    selectMask.bank = MemoryBank.USER;
+                    break;
+                default:
+                    selectMask.bank = MemoryBank.USER;
+                    break;
+            }
+
+
+            if (this.txt_Filter.Text.Length > 0)
+            {
+                selectMask.offset = 0;
+                selectMask.mask = String2Bytes.StringToBytes(this.txt_Filter.Text);
+                selectMask.count = (uint)selectMask.mask.Count();
+
+
+                singulationMask.mask = String2Bytes.StringToBytes(this.txt_Filter.Text);
+                singulationMask.count = (uint)String2Bytes.StringToBytes(this.txt_Filter.Text).Length;
+
+                bool CriteriaSet = SetCriteriaParm((uint)(checkBox_filter.Checked ? 0 : 1), singulationMask, selectMask);
+                if (!CriteriaSet)
+                {
+                    MessageBox.Show("标签过滤设置失败");
+                    AddMessage("设置标签过滤失败");
+                }
+            }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("格式错误，请重新输入！");
+                LogHelper.Error(ex.GetType(), "设置标签过滤", ex);
+            }
+
+        }
+        //0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+        private void AddMessage(string msg)
+        {
+            string str = DateTime.Now.ToString("MM-dd-HH:mm:ss");
+            str = str + msg;
+            txt_Result.AppendText("\r\n \r\n"+str);
+            if (this.txt_Result.TextLength>5000)
+            {
+                this.txt_Result.Text = this.txt_Result.Text.Remove(0, 500);
+            }
+            LogHelper.Info("操作信息",msg);
+        }
+        //-----------------------------------------------------------------------------------------------
+        private void UpdateLable()
+        {
+            this.lb_readERR.Text = errReadCount.ToString();
+            this.lb_Write.Text = writeCount.ToString();
+            this.lb_writeERR.Text = errWriteCount.ToString();
+            this.lb_read.Text = readCount.ToString();
+        }
+
+
+
+        private const int DATAMINLENGTH = 8;
+        private const int DATAHEAD = 0x5A;
+        private const int DATAEND = 0xFE;
+        private const int MAX_WAIT_NET_TIME = 30;
+        private const int MAX_WAIT_HEARTBEAT_TIME = 60;
+        private const int MAX_WAIT_RECONNECT_TIME = 60;
+        private   LibraryVersion version;
+        const uint ENABLE_SELECT_CRITERIA = 0x00;   // set to 0x01 to enable
+        const uint ENABLE_POST_SINGULATION_MATCH = 0x00;  // set to 0x02 to enable
+
+        private   Int32 m_radioHandle;
+        private   Result result;
+        private   Linkage rfid_link = new Linkage();//操作RFID模块
+        public   string error_Msg = "";
+        public   string recv_String = string.Empty;
+        /// <summary>
+        /// 初始化RFID模块
+        /// </summary>
+        /// <param name="radioHandle"></param>
+        /// <returns></returns>
+        public   bool GetRadiosList(ref RadioEnumeration radio)
+        {
+            try
+            {
+                version = new LibraryVersion();
+                radio = new RadioEnumeration();
+                result = rfid_link.Startup(version, 0);
+                if (result != 0)
+                {
+                    AddMessage("初始化RFID模块库失败！");
+                    LogHelper.Info("初始化RFID模块库:", "初始化RFID模块库失败！");
+                    return false;
+                }
+
+                Thread.Sleep(100);
+                //  获取射频模块列表
+
+                result = rfid_link.RetrieveAttachedRadiosList(radio, 0);
+                if (result != Result.OK)
+                {
+                    //  MessageBox.Show("获取射频模块列表失败！");
+                    AddMessage("获取射频模块列表失败！");
+                    LogHelper.Info("初始化RFID模块库:", "获取射频模块列表失败！");
+                    return false;
+                }
+                else if (radio.countRadios == 0)
+                {
+                    //  MessageBox.Show("获取射频模块列表为空！");
+                    AddMessage("获取射频模块列表为空！");
+                    LogHelper.Info("初始化RFID模块库:", "获取射频模块列表为空！");
+                    return false;
+                }
+                AddMessage("成功获取射频模块列表！");
+                return true;
+            }
+            catch (Exception e)
+            {
+                LogHelper.Error(e.GetType(),"RFID模块初始化错误：",e);
+                return false;
+            }
+        }
+        /// <summary>
+        /// 初始化RFID模块
+        /// </summary>
+        /// <param name="radioHandle"></param>
+        /// <returns></returns>
+        public  bool OpenRadioModule(RadioEnumeration radio)
+        {
+            try
+            {
+                result = rfid_link.RadioOpen(radio.radioInfo[0].cookie, ref m_radioHandle, MacMode.DEFAULT);
+                if (result != Result.OK)
+                {
+                    AddMessage("打开射频模块失败！m_radioHandle=" + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                    LogHelper.Info("初始化RFID模块库:", "打开射频模块失败！m_radioHandle=" + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                    Thread.Sleep(500);
+                    result = rfid_link.RadioOpen(radio.radioInfo[0].cookie, ref m_radioHandle, MacMode.DEFAULT);
+                    if (result != Result.OK)
+                    {
+                        AddMessage("第二次打开射频模块失败！m_radioHandle=" + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                        LogHelper.Info("初始化RFID模块库:", "第二次打开射频模块失败！m_radioHandle="
+                            + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                        return false;
+                    }
+                    return false;
+                }
+                else
+                {
+                    RadioOperationMode mode = RadioOperationMode.CONTINUOUS;
+                    result = rfid_link.RadioSetOperationMode(m_radioHandle, mode);
+                    if (result != Result.OK)
+                    {
+                        AddMessage("设置RFID射频模块操作模式失败" + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                        MessageBox.Show("设置RFID射频模块操作模式失败");
+                        LogHelper.Info("初始化RFID模块库:", "设置RFID射频模块操作模式失败");
+                        return false;
+                    }
+                    AddMessage("打开射频模块成功");
+                    LogHelper.Info("初始化RFID模块库:", "打开射频模块成功");
+                }
+                return true;
+            }
+            catch (Exception e)
+            {
+                LogHelper.Error(e.GetType(), "RFID模块初始化", e);
+                return false;
+            }
+        }
+
+
+        public  bool CloseRFID()
+        {
+            result = rfid_link.RadioClose(m_radioHandle);
+            if (result != Result.OK)
+            {
+                AddMessage("关闭射频模块失败！");
+                return false;
+            }
+            AddMessage("关闭模块成功！");
+            return true;
+        }
+        /// <summary>
+        /// 设置天线功率
+        /// </summary>
+        /// <param name="handle"></param>
+        /// <param name="powerLevel"></param>
+        /// <returns></returns>
+        public bool SeAntennaParmSet(uint powerLevel)
+        {
+            Result result;
+
+            try
+            {
+                AntennaPortConfig config = new AntennaPortConfig();
+
+                uint antenna_port = 0;//天线端口号。天线端口号从0开始。
+
+                if ((powerLevel < 0) || (powerLevel > 30))
+                {
+                    return false;
+                }
+
+                result = rfid_link.AntennaPortGetConfiguration(m_radioHandle, antenna_port, config);
+                if (result != Result.OK)
+                {
+                    AddMessage("获取天线配置失败！handle=" + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                    LogHelper.Info("获取天线配置", "获取天线配置失败！handle=" + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                    return false;
+                }
+                AddMessage("获取天线配置成功");
+                config.powerLevel = powerLevel * 10;
+                config.dwellTime = 1000;
+                config.numberInventoryCycles = 8192;
+                config.antennaSenseThreshold = 1048575;
+                result = rfid_link.AntennaPortSetConfiguration(m_radioHandle, antenna_port, config);
+
+                if (result != Result.OK)
+                {
+                    AddMessage("设置天线功率失败！handle=" + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                    LogHelper.Info("设置天线功率:", "设置天线功率失败！handle=" + m_radioHandle.ToString());
+                    return false;
+                }
+                AddMessage("设置天线功率成功");
+                result = rfid_link.AntennaPortSetState(m_radioHandle, antenna_port, AntennaPortState.ENABLED);
+                if (result != Result.OK)
+                {
+                    AddMessage("启用天线失败！handle=" + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                    LogHelper.Info("启用天线:", "启用天线失败！handle=" + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                    return false;
+                }
+                AddMessage("启用天线成功");
+                return true;
+            }
+            catch (Exception e)
+            {
+                LogHelper.Error(e.GetType(), "启用天线成功", e);
+                return false;
+            }
+        }
+        /// <summary>
+        /// 设置单化算法
+        /// </summary>
+        /// <param name="handle">句柄</param>
+        /// <param name="Q_Value"></param>
+        /// <returns></returns>
+        public   bool SeAlgorithmParmSet(uint Q_Value)
+        {
+            Result result;
+            try
+            {
+            if ((Q_Value < 0) || (Q_Value > 15))
+            {
+                return false;
+            }
+            FixedQParms fixQ = new FixedQParms();
+            fixQ.qValue = Q_Value;
+            fixQ.retryCount = 3;
+            fixQ.repeatUntilNoTags = 1;
+            fixQ.toggleTarget = 1;
+
+            result = rfid_link.Set18K6CSingulationAlgorithmParameters(m_radioHandle, SingulationAlgorithm.FIXEDQ, fixQ);
+
+            if (result != Result.OK)
+            {
+                AddMessage("设置单化算法参数失败");
+                LogHelper.Info("设置单化算法参数", "设置单化算法参数失败！handle=" + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                return false;
+            }
+            AddMessage("设置单化算法参数成功");
+            return true;
+        }
+            catch (Exception e)
+            {
+                LogHelper.Error(e.GetType(), "设置单化算法参数", e);
+                return false;
+            }
+}
+        /// <summary>
+        /// 设置RFID射频模块单化匹配标准
+        /// </summary>
+        /// <param name="handle">句柄</param>
+        /// <param name="Q_Value"></param>
+        /// <returns></returns>
+        public  bool SetCriteriaParm(uint match, SingulationMask singulationMask, SelectMask selectMask)
+        {
+            Result result;
+            try
+            {
+                //if ((Q_Value < 0) || (Q_Value > 15))
+                //{
+                //    return false;
+                //}
+                // SingulationAlgorithm algorithm = new SingulationAlgorithm();
+                SelectCriteria criteria = new SelectCriteria();
+            result = rfid_link.Get18K6CSelectCriteria(m_radioHandle, criteria);
+            if (result != Result.OK)
+            {
+                AddMessage("查询RFID射频模块单化匹配标准失败" + "         Result:" + result.ToString());
+                LogHelper.Info("查询RFID射频模块单化匹配标准", "查询RFID射频模块单化匹配标准失败！handle=" + m_radioHandle.ToString() + "         Result:" + result.ToString());
+                return false;
+            }
+            AddMessage("查询RFID射频模块单化匹配标准成功");
+
+            criteria.pCriteria[0].mask = selectMask;
+            result = rfid_link.Set18K6CSelectCriteria(m_radioHandle, criteria, 0);
+            if (result != Result.OK)
+            {
+                AddMessage("设置RFID射频模块单化匹配标准" + "         Result:" + result.ToString());
+                LogHelper.Info("设置RFID射频模块单化匹配标准", "设置RFID射频模块单化匹配标准失败！handle=" + m_radioHandle.ToString());
+                return false;
+            }
+            AddMessage("设置RFID射频模块单化匹配标准成功");
+            SingulationCriteria sicriteria = new SingulationCriteria();
+            result = rfid_link.Get18K6CPostMatchCriteria(m_radioHandle, sicriteria);
+            if (result != Result.OK)
+            {
+                AddMessage("获取RFID射频模块单化过程标签匹配标准失败" + "         Result:" + result.ToString());
+                LogHelper.Info("获取RFID射频模块单化过程标签匹配标准", "获取RFID射频模块单化过程标签匹配标准失败！handle=" + m_radioHandle.ToString());
+                return false;
+            }
+            AddMessage("获取RFID射频模块单化过程标签匹配标准成功");
+            sicriteria.countCriteria = 0;
+            SingulationCriterion pCriterion = new SingulationCriterion();
+            pCriterion.match = match;
+            pCriterion.mask = singulationMask;
+            sicriteria.pCriteria[0] = pCriterion;
+
+            // config.powerLevel = powerLevel * 10;
+            result = rfid_link.Set18K6CPostMatchCriteria(m_radioHandle, sicriteria, 0);
+            if (result != Result.OK)
+            {
+                AddMessage("设置RFID射频模块单化过程标签匹配标准失败" + "         Result:" + result.ToString());
+                LogHelper.Info("ERROR", "设置RFID射频模块单化过程标签匹配标准失败！handle=" + m_radioHandle.ToString());
+                return false;
+            }
+            AddMessage("设置RFID射频模块单化过程标签匹配标准成功");
+            return true;
+            }
+            catch (Exception e)
+            {
+                LogHelper.Error(e.GetType(), "设置RFID射频模块单化匹配标准", e);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 向RFID模块写入值
+        /// </summary>
+        /// <param name="count">数量</param>
+        /// <param name="offset">偏移量</param>
+        /// <param name="pdata">写入的数据</param>
+        /// <returns></returns>
+        public   bool StartRfidWrite(WriteSequentialParms parms)
+        {
+            Result result;
+
+            try
+            {
+                WriteCallBack callback = new WriteCallBack();
+                WriteParms writeParms = new WriteParms();
+                writeParms.common = new CommonParms();
+                writeParms.common.tagStopCount = 0;
+                writeParms.common.callback = new CallbackDelegate(callback.OnWriteRfidData);
+                writeParms.common.context = IntPtr.Zero;
+                writeParms.common.callbackCode = IntPtr.Zero;
+
+                writeParms.writeType = WriteType.SEQUENTIAL;
+                writeParms.writeParms = parms;
+
+                result = rfid_link.Tag18K6CWrite(m_radioHandle, writeParms, 0);
+
+                if (result != Result.OK)
+                {
+                    AddMessage("第一次向标签写入值失败！Result=" + result.ToString());
+                    result = rfid_link.RadioCancelOperation(m_radioHandle, 0);
+                    if (result == Result.OK)
+                    {
+                        AddMessage("成功取消读取标签！" + callback.recv_String.ToString());
+                        result = rfid_link.Tag18K6CWrite(m_radioHandle, writeParms, 0);
+                   
+                    }
+                }
+                UInt32 macError = 0;
+                UInt32 macLastError = 0;
+                Result result_Mac = rfid_link.MacGetError(m_radioHandle, ref macError, ref macLastError);
+                if (result_Mac == Result.OK)
+                {
+                    if (macError != 0)
+                    {
+                        MessageBox.Show("Write : MacGetError---" + macError);
+                        AddMessage("Write : MacGetError" + parms.pData.ToString() + "      macError: " + macError + "      macLastError:" + macLastError);
+                        LogHelper.MacErr("Write : MacGetError", parms.pData.ToString() + "      macError: " + macError + "      macLastError:" + macLastError);
+                    }
+                }
+                else
+                {
+                    AddMessage("Write : MacGetError产生错误！" + "         Result:" + result_Mac.ToString() + "      macError: " + macError + "      macLastError:" + macLastError);
+                    LogHelper.MacErr("Write : MacGetError产生错误！", parms.pData.ToString() + "      macError: " + macError + "      macLastError:" + macLastError);
+                }
+                if (result == Result.OK)
+                {
+
+
+                    AddMessage("向标签写入值成功！返回值为：" + callback.recv_String.ToString());
+                    return true;
+                }
+                else
+                {
+                    AddMessage("第二次向标签写入值失败！Result=" + result.ToString());
+                    return false;
+                }
+            }
+            catch (Exception e)
+            {
+                LogHelper.Error(e.GetType(), "向RFID模块写入数据", e);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 开始读取
+        /// </summary>
+        /// <param name="radioHandle"></param>
+        /// <param name="count">读取的字节长度</param>
+        /// <returns></returns>
+        public  bool StartRfidRead(ReadCmdParms readCmdParms)
+        {
+
+            Result result;
+
+            try
+            {
+                ReadCallback callback = new ReadCallback();
+                ReadParms readParms = new ReadParms();
+                readParms.common = new CommonParms();
+                readParms.common.tagStopCount = 0;
+                readParms.common.callback = new CallbackDelegate(callback.OnReadRfidData);
+                readParms.common.context = IntPtr.Zero;
+                readParms.common.callbackCode = IntPtr.Zero;
+                readParms.accessPassword = 0x0;
+
+                //标签读取参数
+                readParms.readCmdParms = readCmdParms;
+                result = rfid_link.Tag18K6CRead(m_radioHandle, readParms, 0);
+               
+                
+               
+                if (result != Result.OK)
+                {
+                    AddMessage("第一次读取标签值失败！Result=" + result.ToString());
+                    result = rfid_link.RadioCancelOperation(m_radioHandle, 0);
+                    if (result == Result.OK)
+                    {
+                        AddMessage("成功取消第一次读取标签，开始第二次读取！");
+                        result = rfid_link.Tag18K6CRead(m_radioHandle, readParms, 0);
+                    }
+                }
+                uint macError = 0;
+                uint macLastError = 0;
+                Result result_Mac = rfid_link.MacGetError(m_radioHandle, ref macError, ref macLastError);
+
+                if (result_Mac == Result.OK)
+                {
+                    if (macError != 0)
+                    {
+                        AddMessage("Read : MacGetError" + callback.recv_String.ToString() + "      macError: " + macError + "      macLastError:" + macLastError);
+                        MessageBox.Show("Read : MacGetError---" + macError);
+                        LogHelper.ReadErr("Read : MacGetError", callback.recv_String.ToString() + "      macError: " + macError + "      macLastError:" + macLastError);
+                    }
+                }
+                else
+                {
+                    AddMessage("Read : MacGetError产生错误！" + "         Result:" + result_Mac.ToString() + "      macError: " + macError + "      macLastError:" + macLastError);
+                }
+
+                if (result == Result.OK)
+                {
+                    byte[] pdata;
+                    pdata = String2Bytes.StringToBytes(InStr);
+
+                    if (byteHelper.IsEquals(pdata.Where(x => x != 0).ToArray(), callback.read_Bytes.Where(x => x != 0).ToArray()))
+                    {
+                        AddMessage("***********Success : RFID模块读到了我写入的时间**************");
+                    }
+                    else
+                    {
+                        AddMessage("**********Fail : RFID模块读到了错误的标签**********");
+                    }
+                    AddMessage("读取标签值成功！返回值为："+callback.recv_String.ToString());
+                    return true;
+                }
+                else
+                {
+                    AddMessage("第二次读取标签值失败！Result=" + result.ToString());
+                    return false;
+                }
+            }
+            catch (Exception e)
+            {
+                LogHelper.Error(e.GetType(), "读取标签", e);
+                return false;
+            }
+        }
+
+    }
+
+}
